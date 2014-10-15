@@ -1,4 +1,5 @@
 import luigi
+from luigi.s3 import S3Target
 from luigi.contrib.sge import SGEJobTask
 from subprocess import check_output
 from os.path import join
@@ -17,7 +18,7 @@ class TestJob(SGEJobTask, luigi.ExternalTask):
 		check_output(cmd, shell=True)
 
 	def output(self):
-		return luigi.S3Target('s3://h3bioinf-test/test_luigi/%s' % self.job_name)
+		return luigi.s3.S3Target('s3://h3bioinf-test/test_luigi/%s' % self.job_name)
 
 
 class RunAll(luigi.WrapperTask):
