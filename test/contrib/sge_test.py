@@ -1,24 +1,24 @@
 import luigi
-from luigi.s3 import S3Target
 from luigi.contrib.sge import SGEJobTask
 from subprocess import check_output
-from os.path import join
+import os.path
 import logging
 
 logger = logging.getLogger('luigi-interface')
 
 class TestJob(SGEJobTask, luigi.ExternalTask):
 
+	'''Writes a test file to SGE shared drive and waits a minute'''
+
+	shared_drive = luigi.Parameter('/home')
+
 	def work(self):
 		check_output('sleep 60', shell=True)
-		with open('./testfile', 'w') as f:
+		with open(self.output().path, 'w') as f:
 			f.write('this is a test')
-		cmd = 'aws s3 cp ./testfile s3://h3bioinf-test/test_luigi/%s' % self.job_name
-		logger.info('running: ' + cmd)
-		check_output(cmd, shell=True)
 
 	def output(self):
-		return luigi.s3.S3Target('s3://h3bioinf-test/test_luigi/%s' % self.job_name)
+		return luigi.LocalTarget(os.path.join(self.shared_drive, 'testfile_' + self.job_name))
 
 
 class RunAll(luigi.WrapperTask):
