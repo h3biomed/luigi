@@ -1,3 +1,4 @@
+import unittest
 import luigi
 from luigi.contrib.sge import SGEJobTask
 from subprocess import check_output
@@ -6,7 +7,11 @@ import logging
 
 logger = logging.getLogger('luigi-interface')
 
-class TestJob(SGEJobTask, luigi.ExternalTask):
+result = check_output('qhost')
+assert result.startswith('HOSTNAME'), 'SunGrid Engine is not installed on this machine'
+
+
+class TestJobTask(SGEJobTask, luigi.ExternalTask):
 
 	'''Writes a test file to SGE shared drive and waits a minute'''
 
@@ -21,10 +26,10 @@ class TestJob(SGEJobTask, luigi.ExternalTask):
 		return luigi.LocalTarget(os.path.join(self.shared_drive, 'testfile_' + self.job_name))
 
 
-class RunAll(luigi.WrapperTask):
+class SGETest(unittest.TestCase):
 
 	def requires(self):
-		return [TestJob(job_name='job_%s' % i, n_cpu=1) for i in range(3)]
+		return [TestJobTask(job_name='job_%s' % i, n_cpu=1) for i in range(3)]
 
 
 if __name__ == '__main__':

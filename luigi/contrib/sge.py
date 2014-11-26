@@ -1,6 +1,13 @@
-''' SGE batch system Tasks.
+''' SunGrid Engine batch-queuing system Tasks.
 
-Adapted from LSF extension from github.com/dattalab/luigi
+Originally authored by Alex Wiltschko (@alexbw) for LSF
+(see https://github.com/dattalab/luigi/tree/lsf_submission/luigi)
+
+Adapted slightly for SGE qsub/qstat commands by Jake Feala (@jfeala).
+SGE is used in MIT StarCluster (http://star.mit.edu/cluster/)
+and the commercial CycleCloud platform by Cycle Computing 
+(http://www.cyclecomputing.com/products-solutions/cyclecloud/)
+
 '''
 
  
@@ -154,7 +161,7 @@ class SGEJobTask(luigi.Task):
         qsub_args += ['-o', '"%s"' % os.path.join(self.tmp_dir, 'job.out')]
         qsub_args += ['-V'] # pass environment vars
         qsub_args += ['-r', 'y'] # re-run the job if it fails (e.g. a spot instance dies)
-        qsub_args += ['-pe', 'orte', str(self.n_cpu)]
+        qsub_args += ['-pe', 'orte', str(self.n_cpu)] # StarCluster-specific!!
         qsub_args += ['-N', self.job_name]
         qsub_args += self.extra_qsub_args.split()
         qsub_str = ' '.join(qsub_args)
@@ -228,7 +235,6 @@ class SGEJobTask(luigi.Task):
                 job_status = UNKNOWN
                 logger.info("Job status is UNKNOWN!")
                 logger.info("Status is : %s" % sge_status)
-                break
                 raise Exception, "What the heck, the job_status isn't in my list, but it is %s" % sge_status
 
 
