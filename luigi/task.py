@@ -41,18 +41,20 @@ def id_to_name_and_params(task_id):
         ``('Foo', {'bar': 'bar', 'baz': 'baz'})``
     '''
     name_chars = pp.alphanums + '_'
+    # modified version of pp.printables. Removed '[]', '()', ','
+    value_chars = pp.alphanums + '\'!"#$%&*+-./:;<=>?@\\^_`{|}~'
     parameter = (
         (pp.Word(name_chars) +
          pp.Literal('=').suppress() +
          ((pp.Literal('(').suppress() | pp.Literal('[').suppress()) +
-          pp.ZeroOrMore(pp.Word(name_chars) +
+          pp.ZeroOrMore(pp.Word(value_chars) +
                         pp.ZeroOrMore(pp.Literal(',')).suppress()) +
           (pp.Literal(')').suppress() |
            pp.Literal(']').suppress()))).setResultsName('list_params',
                                                         listAllMatches=True) |
         (pp.Word(name_chars) +
          pp.Literal('=').suppress() +
-         pp.Word(name_chars)).setResultsName('params', listAllMatches=True))
+         pp.Word(value_chars)).setResultsName('params', listAllMatches=True))
 
     parser = (
         pp.Word(name_chars).setResultsName('task') +
@@ -196,22 +198,16 @@ class Register(abc.ABCMeta):
         return task_cls
 
     @classmethod
-    def get_global_params(cls):
-        """Compiles and returns the global parameters for all :py:class:`Task`.
+    def get_all_params(cls):
+        """Compiles and returns all parameters for all :py:class:`Task`.
 
         :return: a ``dict`` of parameter name -> parameter.
         """
-        global_params = {}
-        for t_name, t_cls in cls.get_reg().iteritems():
-            if t_cls == cls.AMBIGUOUS_CLASS:
+        for task_name, task_cls in cls.get_reg().iteritems():
+            if task_cls == cls.AMBIGUOUS_CLASS:
                 continue
-            for param_name, param_obj in t_cls.get_global_params():
-                if param_name in global_params and global_params[param_name] != param_obj:
-                    # Could be registered multiple times in case there's subclasses
-                    raise Exception('Global parameter %r registered by multiple classes' % param_name)
-                global_params[param_name] = param_obj
-        return global_params.iteritems()
-
+            for param_name, param_obj in task_cls.get_params():
+                yield task_name, param_name, param_obj
 
 
 class Task(object):
@@ -258,6 +254,10 @@ class Task(object):
     # task requires 1 unit of the scp resource.
     resources = {}
 
+    # Number of seconds after which to time out the run function. No timeout if set to 0. Defaults
+    # to 0 or value in client.cfg
+    worker_timeout = None
+
     @classmethod
     def event_handler(cls, event):
         """ Decorator for adding event handlers """
@@ -284,6 +284,12 @@ class Task(object):
                     pass
 
     @property
+    def task_module(self):
+        # Returns what Python module to import to get access to this class
+        # TODO(erikbern): we should think about a language-agnostic mechanism
+        return self.__class__.__module__
+
+    @property
     def task_family(self):
         """Convenience method since a property on the metaclass isn't directly
         accessible through the class instances.
@@ -307,16 +313,6 @@ class Task(object):
         return params
 
     @classmethod
-    def get_global_params(cls):
-        """Return the global parameters for this Task."""
-        return [(param_name, param_obj) for param_name, param_obj in cls.get_params() if param_obj.is_global]
-
-    @classmethod
-    def get_nonglobal_params(cls):
-        """Return the non-global parameters for this Task."""
-        return [(param_name, param_obj) for param_name, param_obj in cls.get_params() if not param_obj.is_global]
-
-    @classmethod
     def get_param_values(cls, params, args, kwargs):
         """Get the values of the parameters from the args and kwargs.
 
@@ -334,7 +330,7 @@ class Task(object):
         exc_desc = '%s[args=%s, kwargs=%s]' % (cls.__name__, args, kwargs)
 
         # Fill in the positional arguments
-        positional_params = [(n, p) for n, p in params if not p.is_global]
+        positional_params = [(n, p) for n, p in params]
         for i, arg in enumerate(args):
             if i >= len(positional_params):
                 raise parameter.UnknownParameterException('%s: takes at most %d parameters (%d given)' % (exc_desc, len(positional_params), len(args)))
@@ -347,8 +343,6 @@ class Task(object):
                 raise parameter.DuplicateParameterException('%s: parameter %s was already set as a positional parameter' % (exc_desc, param_name))
             if param_name not in params_dict:
                 raise parameter.UnknownParameterException('%s: unknown parameter %s' % (exc_desc, param_name))
-            if params_dict[param_name].is_global:
-                raise parameter.ParameterException('%s: can not override global parameter %s' % (exc_desc, param_name))
             result[param_name] = arg
 
         # Then use the defaults for anything not filled in
@@ -403,28 +397,20 @@ class Task(object):
         return hasattr(self, 'task_id')
 
     @classmethod
-    def from_str_params(cls, params_str, global_params):
+    def from_str_params(cls, params_str={}):
         """Creates an instance from a str->str hash
 
-        This method is for parsing of command line arguments or other
-        non-programmatic invocations.
-
         :param params_str: dict of param name -> value.
-        :param global_params: dict of param name -> value, the global params.
         """
-        for param_name, param in global_params:
-            value = param.parse_from_input(param_name, params_str[param_name])
-            param.set_global(value)
-
         kwargs = {}
-        for param_name, param in cls.get_nonglobal_params():
+        for param_name, param in cls.get_params():
             value = param.parse_from_input(param_name, params_str[param_name])
             kwargs[param_name] = value
 
         return cls(**kwargs)
 
     def to_str_params(self):
-        """Opposite of from_str_params"""
+        # Convert all parameters to a str->str hash
         params_str = {}
         params = dict(self.get_params())
         for param_name, param_value in self.param_kwargs.iteritems():
@@ -446,7 +432,7 @@ class Task(object):
             cls = self.__class__
 
         new_k = {}
-        for param_name, param_class in cls.get_nonglobal_params():
+        for param_name, param_class in cls.get_params():
             if param_name in k:
                 new_k[param_name] = k[param_name]
 
@@ -464,16 +450,28 @@ class Task(object):
     def complete(self):
         """
             If the task has any outputs, return ``True`` if all outputs exists.
-            Otherwise, return ``False`.
+            Otherwise, return ``False``.
 
             However, you may freely override this method with custom logic.
         """
         outputs = flatten(self.output())
         if len(outputs) == 0:
-            warnings.warn("Task %r without outputs has no custom complete() method" % self)
+            warnings.warn(
+                "Task %r without outputs has no custom complete() method" % self,
+                stacklevel=2
+            )
             return False
 
         return all(itertools.imap(lambda output: output.exists(), outputs))
+
+    @classmethod
+    def bulk_complete(cls, parameter_tuples):
+        """Returns those of parameter_tuples for which this Task is complete.
+
+        Override (with an efficient implementation) for efficient scheduling
+        with range tools. Keep the logic consistent with that of complete().
+        """
+        raise NotImplementedError
 
     def output(self):
         """The output that this Task produces.
@@ -565,7 +563,7 @@ class Task(object):
 def externalize(task):
     """Returns an externalized version of the Task.
 
-    See py:class:`ExternalTask`.
+    See :py:class:`ExternalTask`.
     """
     task.run = NotImplemented
     return task

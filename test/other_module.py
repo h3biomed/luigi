@@ -1,4 +1,4 @@
-# Copyright (c) 2012 Spotify AB
+# Copyright (c) 2015 Spotify AB
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not
 # use this file except in compliance with the License. You may obtain a copy of
@@ -12,16 +12,14 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-import unittest
-from luigi import notifications
-from helpers import with_config
+import luigi
 
+class OtherModuleTask(luigi.Task):
+    p = luigi.Parameter()
 
-class TestEmail(unittest.TestCase):
+    def output(self):
+        return luigi.LocalTarget(self.p)
 
-    def testEmailNoPrefix(self):
-        self.assertEqual("subject", notifications._prefix('subject'))
-
-    @with_config({"core": {"email-prefix": "[prefix]"}})
-    def testEmailPrefix(self):
-        self.assertEqual("[prefix] subject", notifications._prefix('subject'))
+    def run(self):
+        with self.output().open('w') as f:
+            f.write('Done!')

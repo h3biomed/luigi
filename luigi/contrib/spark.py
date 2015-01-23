@@ -72,6 +72,14 @@ class SparkJobError(RuntimeError):
         self.out = out
         self.err = err
 
+    def __str__(self):
+        info = self.message
+        if self.out:
+            info += "\nSTDOUT: " + str(self.out)
+        if self.err:
+            info += "\nSTDERR: " + str(self.err)
+        return info
+
 
 class SparkJob(luigi.Task):
     spark_workers = None
@@ -158,7 +166,7 @@ class SparkJob(luigi.Task):
             raise SparkJobError('Spark job failed: see yarn logs for %s' % app_id)
         else:
             temp_stderr.seek(0)
-            errors = temp_stderr.readlines()
+            errors = "".join(temp_stderr.readlines())
             logger.error(errors)
             raise SparkJobError('Spark job failed', err=errors)
 
@@ -204,6 +212,9 @@ class Spark1xJob(luigi.Task):
     driver_memory = None
     executor_memory = None
     executor_cores = None
+    deploy_mode = None
+    queue = None
+    spark_master = "yarn-client"
 
     def jar(self):
         raise NotImplementedError("subclass should define jar "
@@ -233,7 +244,6 @@ class Spark1xJob(luigi.Task):
                                                       'spark-submit')
         options = [
             '--class', self.job_class(),
-            '--master', 'yarn-client',
         ]
         if self.num_executors is not None:
             options += ['--num-executors', self.num_executors]
@@ -243,6 +253,12 @@ class Spark1xJob(luigi.Task):
             options += ['--executor-memory', self.executor_memory]
         if self.executor_cores is not None:
             options += ['--executor-cores', self.executor_cores]
+        if self.deploy_mode is not None:
+            options += ['--deploy-mode', self.deploy_mode]
+        if self.queue is not None:
+            options += ['--queue', self.queue]
+        if self.spark_master is not None:
+            options += ['--master', self.spark_master]
         dependency_jars = self.dependency_jars()
         if dependency_jars != []:
             options += ['--jars', ','.join(dependency_jars)]
@@ -260,7 +276,7 @@ class Spark1xJob(luigi.Task):
                                 .format(app_id))
         elif return_code != 0:
             temp_stderr.seek(0)
-            errors = temp_stderr.readlines()
+            errors = "".join(temp_stderr.readlines())
             logger.error(errors)
             raise SparkJobError('Spark job failed', err=errors)
 
@@ -354,6 +370,6 @@ class PySpark1xJob(Spark1xJob):
                                 .format(app_id))
         elif return_code != 0:
             temp_stderr.seek(0)
-            errors = temp_stderr.readlines()
+            errors = "".join(temp_stderr.readlines())
             logger.error(errors)
             raise SparkJobError('Spark job failed', err=errors)

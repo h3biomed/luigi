@@ -23,13 +23,10 @@ import socket
 import configuration
 import traceback
 import logging
-import warnings
 import notifications
 import getpass
 import multiprocessing # Note: this seems to have some stability issues: https://github.com/spotify/luigi/pull/438
 import Queue
-import luigi.interface
-import sys
 import types
 import interface
 from target import Target
@@ -56,12 +53,15 @@ class TaskProcess(multiprocessing.Process):
     ''' Wrap all task execution in this class.
 
     Mainly for convenience since this is run in a separate process. '''
-    def __init__(self, task, worker_id, result_queue, random_seed=False):
+    def __init__(self, task, worker_id, result_queue, random_seed=False, worker_timeout=0):
         super(TaskProcess, self).__init__()
         self.task = task
         self.worker_id = worker_id
         self.result_queue = result_queue
         self.random_seed = random_seed
+        if task.worker_timeout is not None:
+            worker_timeout = task.worker_timeout
+        self.timeout_time = time.time() + worker_timeout if worker_timeout else None
 
     def run(self):
         logger.info('[pid %s] Worker %s running   %s', os.getpid(), self.worker_id, self.task.task_id)
@@ -99,13 +99,14 @@ class TaskProcess(multiprocessing.Process):
                         new_req = flatten(requires)
                         status = (RUNNING if all(t.complete() for t in new_req)
                                   else SUSPENDED)
-                        new_deps = [(t.task_family, t.to_str_params())
+                        new_deps = [(t.task_module, t.task_family, t.to_str_params())
                                     for t in new_req]
                         if status == RUNNING:
                             self.result_queue.put(
                                 (self.task.task_id, status, '', missing,
                                  new_deps))
                             next_send = getpaths(requires)
+                            new_deps = []
                         else:
                             logger.info(
                                 '[pid %s] Worker %s new requirements      %s',
@@ -135,6 +136,45 @@ class TaskProcess(multiprocessing.Process):
                 (self.task.task_id, status, error_message, missing, new_deps))
 
 
+class SingleProcessPool(object):
+    """ Dummy process pool for using a single processor
+
+    Imitates the api of multiprocessing.Pool using single-processor equivalents
+    """
+
+    def apply_async(self, function, args):
+        return function(*args)
+
+
+class DequeQueue(collections.deque):
+    """ deque wrapper implementing the Queue interface """
+
+    put = collections.deque.append
+    get = collections.deque.pop
+
+
+class AsyncCompletionException(Exception):
+    """ Exception indicating that something went wrong with checking complete """
+    def __init__(self, trace):
+        self.trace = trace
+
+
+class TracebackWrapper(object):
+    """ Class to wrap tracebacks so we can know they're not just strings """
+    def __init__(self, trace):
+        self.trace = trace
+
+
+def check_complete(task, out_queue):
+    """ Checks if task is complete, puts the result to out_queue """
+    logger.debug("Checking if %s is complete", task)
+    try:
+        is_complete = task.complete()
+    except:
+        is_complete = TracebackWrapper(traceback.format_exc())
+    out_queue.put((task, is_complete))
+
+
 class Worker(object):
     """ Worker object communicates with a scheduler.
 
@@ -145,7 +185,8 @@ class Worker(object):
 
     def __init__(self, scheduler=CentralPlannerScheduler(), worker_id=None,
                  worker_processes=1, ping_interval=None, keep_alive=None,
-                 wait_interval=None, max_reschedules=None, count_uniques=None):
+                 wait_interval=None, max_reschedules=None, count_uniques=None,
+                 worker_timeout=None):
         self.worker_processes = int(worker_processes)
         self._worker_info = self._generate_worker_info()
 
@@ -174,6 +215,10 @@ class Worker(object):
         if max_reschedules is None:
             max_reschedules = config.getint('core', 'max-reschedules', 1)
         self.__max_reschedules = max_reschedules
+
+        if worker_timeout is None:
+            worker_timeout = configuration.get_config().getint('core', 'worker-timeout', 0)
+        self.__worker_timeout = worker_timeout
 
         self._id = worker_id
         self._scheduler = scheduler
@@ -266,9 +311,9 @@ class Worker(object):
             # we can't get the repr of it since it's not initialized...
             raise TaskException('Task of class %s not initialized. Did you override __init__ and forget to call super(...).__init__?' % task.__class__.__name__)
 
-    def _log_complete_error(self, task):
-        log_msg = "Will not schedule {task} or any dependencies due to error in complete() method:".format(task=task)
-        logger.warning(log_msg, exc_info=1)  # Needs to be called from except-clause to work
+    def _log_complete_error(self, task, tb):
+        log_msg = "Will not schedule {task} or any dependencies due to error in complete() method:\n{tb}".format(task=task, tb=tb)
+        logger.warning(log_msg)
 
     def _log_unexpected_error(self, task):
         logger.exception("Luigi unexpected framework error while scheduling %s", task) # needs to be called from within except clause
@@ -276,33 +321,45 @@ class Worker(object):
     def _email_complete_error(self, task, formatted_traceback):
           # like logger.exception but with WARNING level
         formatted_traceback = notifications.wrap_traceback(formatted_traceback)
-        subject = "Luigi: {task} failed scheduling".format(task=task)
+        subject = "Luigi: {task} failed scheduling. Host: {host}".format(task=task, host=self.host)
         message = "Will not schedule {task} or any dependencies due to error in complete() method:\n{traceback}".format(task=task, traceback=formatted_traceback)
         notifications.send_error_email(subject, message)
 
     def _email_unexpected_error(self, task, formatted_traceback):
         formatted_traceback = notifications.wrap_traceback(formatted_traceback)
-        subject = "Luigi: Framework error while scheduling {task}".format(task=task)
+        subject = "Luigi: Framework error while scheduling {task}. Host: {host}".format(task=task, host=self.host)
         message = "Luigi framework error:\n{traceback}".format(traceback=formatted_traceback)
         notifications.send_error_email(subject, message)
 
-    def add(self, task):
+    def add(self, task, multiprocess=False):
         """ Add a Task for the worker to check and possibly schedule and run.
          Returns True if task and its dependencies were successfully scheduled or completed before"""
         if self._first_task is None and hasattr(task, 'task_id'):
             self._first_task = task.task_id
         self.add_succeeded = True
-        stack = [task]
+        if multiprocess:
+            queue = multiprocessing.Manager().Queue()
+            pool = multiprocessing.Pool()
+        else:
+            queue = DequeQueue()
+            pool = SingleProcessPool()
         self._validate_task(task)
-        seen = set([task.task_id])
+        pool.apply_async(check_complete, [task, queue])
+
+        # we track queue size ourselves because len(queue) won't work for multiprocessing
+        queue_size = 1
         try:
-            while stack:
-                current = stack.pop()
-                for next in self._add(current):
+            seen = set([task.task_id])
+            while queue_size:
+                current = queue.get()
+                queue_size -= 1
+                item, is_complete = current
+                for next in self._add(item, is_complete):
                     if next.task_id not in seen:
                         self._validate_task(next)
                         seen.add(next.task_id)
-                        stack.append(next)
+                        pool.apply_async(check_complete, [next, queue])
+                        queue_size += 1
         except (KeyboardInterrupt, TaskException):
             raise
         except Exception as ex:
@@ -313,21 +370,20 @@ class Worker(object):
             self._email_unexpected_error(task, formatted_traceback)
         return self.add_succeeded
 
-    def _check_complete(self, task):
-        return task.complete()
-
-    def _add(self, task):
-        logger.debug("Checking if %s is complete", task)
-        is_complete = False
+    def _add(self, task, is_complete):
+        formatted_traceback = None
         try:
-            is_complete = self._check_complete(task)
             self._check_complete_value(is_complete)
         except KeyboardInterrupt:
             raise
+        except AsyncCompletionException as ex:
+            formatted_traceback = ex.trace
         except:
-            self.add_succeeded = False
             formatted_traceback = traceback.format_exc()
-            self._log_complete_error(task)
+
+        if formatted_traceback is not None:
+            self.add_succeeded = False
+            self._log_complete_error(task, formatted_traceback)
             task.trigger_event(Event.DEPENDENCY_MISSING, task)
             self._email_complete_error(task, formatted_traceback)
             # abort, i.e. don't schedule any subtasks of a task with
@@ -383,6 +439,8 @@ class Worker(object):
 
     def _check_complete_value(self, is_complete):
         if is_complete not in (True, False):
+            if isinstance(is_complete, TracebackWrapper):
+                raise AsyncCompletionException(is_complete.trace)
             raise Exception("Return value of Task.complete() must be boolean (was %r)" % is_complete)
 
     def _add_worker(self):
@@ -422,7 +480,8 @@ class Worker(object):
     def _run_task(self, task_id):
         task = self._scheduled_tasks[task_id]
         p = TaskProcess(task, self._id, self._task_result_queue,
-                        random_seed=bool(self.worker_processes > 1))
+                        random_seed=bool(self.worker_processes > 1),
+                        worker_timeout=self.__worker_timeout)
         self._running_tasks[task_id] = p
 
         if self.worker_processes > 1:
@@ -440,9 +499,15 @@ class Worker(object):
         for task_id, p in self._running_tasks.iteritems():
             if not p.is_alive() and p.exitcode:
                 error_msg = 'Worker task %s died unexpectedly with exit code %s' % (task_id, p.exitcode)
-                logger.info(error_msg)
-                self._task_result_queue.put(
-                        (task_id, FAILED, error_msg, [], []))
+            elif p.timeout_time is not None and time.time() > p.timeout_time and p.is_alive():
+                p.terminate()
+                error_msg = 'Worker task %s timed out and was terminated.' % task_id
+            else:
+                continue
+
+            logger.info(error_msg)
+            self._task_result_queue.put((task_id, FAILED, error_msg, [], []))
+
 
     def _handle_next_task(self):
         ''' We have to catch three ways a task can be "done"
@@ -463,14 +528,14 @@ class Worker(object):
                 return
 
             task = self._scheduled_tasks[task_id]
-            if not task:
+            if not task or task_id not in self._running_tasks:
                 continue
-                # Not a scheduled task. Probably already removed.
+                # Not a running task. Probably already removed.
                 # Maybe it yielded something?
             new_deps = []
             if new_requirements:
-                new_req = [interface.load_task(task, name, params)
-                           for name, params in new_requirements]
+                new_req = [interface.load_task(module, name, params)
+                           for module, name, params in new_requirements]
                 for t in new_req:
                     self.add(t)
                 new_deps = [t.task_id for t in new_req]
@@ -495,8 +560,8 @@ class Worker(object):
 
                 # keep out of infinite loops by not rescheduling too many times
                 for task_id in missing:
-                    self.unfulfilled_counts[task.task_id] += 1
-                    if (self.unfulfilled_counts[task.task_id] >
+                    self.unfulfilled_counts[task_id] += 1
+                    if (self.unfulfilled_counts[task_id] >
                             self.__max_reschedules):
                         reschedule = False
                 if reschedule:

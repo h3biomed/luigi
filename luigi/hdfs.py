@@ -15,7 +15,6 @@
 import subprocess
 import os
 import random
-import tempfile
 import urlparse
 import luigi.format
 import luigi.contrib.target
@@ -27,7 +26,6 @@ import configuration
 import logging
 import getpass
 logger = logging.getLogger('luigi-interface')
-import sys
 
 
 class HDFSCliError(Exception):
@@ -287,27 +285,21 @@ class SnakebiteHdfsClient(HdfsClient):
         If Luigi has forked, we have a different PID, and need to reconnect.
         """
         if self.pid != os.getpid() or not self._bite:
-            autoconfig_enabled = self.config.getboolean("hdfs", "snakebite_autoconfig", False)
-            if autoconfig_enabled is True:
+            client_kwargs = dict(filter(lambda (k, v): v is not None and v != '',  {
+                'hadoop_version': self.config.getint("hdfs", "client_version", None),
+                'effective_user': self.config.get("hdfs", "effective_user", None)
+            }.items()))
+            if self.config.getboolean("hdfs", "snakebite_autoconfig", False):
                 """
                 This is fully backwards compatible with the vanilla Client and can be used for a non HA cluster as well.
                 This client tries to read ``${HADOOP_PATH}/conf/hdfs-site.xml`` to get the address of the namenode.
                 The behaviour is the same as Client.
                 """
                 from snakebite.client import AutoConfigClient
-                self._bite = AutoConfigClient()
+                self._bite = AutoConfigClient(**client_kwargs)
             else:
                 from snakebite.client import Client
-                try:
-                    ver = self.config.getint("hdfs", "client_version")
-                    if ver is None:
-                        raise RuntimeError()
-                    self._bite = Client(self.config.get("hdfs", "namenode_host"),
-                                       self.config.getint("hdfs", "namenode_port"),
-                                       hadoop_version=ver)
-                except:
-                    self._bite = Client(self.config.get("hdfs", "namenode_host"),
-                                       self.config.getint("hdfs", "namenode_port"))
+                self._bite = Client(self.config.get("hdfs", "namenode_host"), self.config.getint("hdfs", "namenode_port"), **client_kwargs)
         return self._bite
 
     def exists(self, path):
@@ -674,7 +666,8 @@ class HdfsTarget(FileSystemTarget):
         self.format = format
         self.is_tmp = is_tmp
         (scheme, netloc, path, query, fragment) = urlparse.urlsplit(path)
-        assert ":" not in path  # colon is not allowed in hdfs filenames
+        if ":" in path:
+            raise ValueError('colon is not allowed in hdfs filenames')
         self._fs = fs or get_autoconfig_client()
 
     def __del__(self):

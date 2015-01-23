@@ -41,7 +41,7 @@ class DuplicateParameterException(ParameterException):
 
 
 class UnknownConfigException(ParameterException):
-    """Exception signifying that the ``default_from_config`` for the Parameter could not be found."""
+    """Exception signifying that the ``config_path`` for the Parameter could not be found."""
     pass
 
 
@@ -75,7 +75,7 @@ class Parameter(object):
     """non-atomically increasing counter used for ordering parameters."""
 
     def __init__(self, default=_no_value, is_list=False, is_boolean=False, is_global=False, significant=True, description=None,
-                 config_path=None, default_from_config=None):
+                 config_path=None):
         """
         :param default: the default value for this parameter. This should match the type of the
                         Parameter, i.e. ``datetime.date`` for ``DateParameter`` or ``int`` for
@@ -110,15 +110,11 @@ class Parameter(object):
         self.is_global = is_global  # It just means that the default value is exposed and you can override it
         self.significant = significant # Whether different values for this parameter will differentiate otherwise equal tasks
 
-        if default_from_config is not None:
-            warnings.warn("Use config_path parameter, not default_from_config", DeprecationWarning)
-            config_path = default_from_config
-
         if is_global and default == _no_value and config_path is None:
             raise ParameterException('Global parameters need default values')
         self.description = description
 
-        if config_path is not None and (not 'section' in config_path or not 'name' in config_path):
+        if config_path is not None and ('section' not in config_path or 'name' not in config_path):
             raise ParameterException('config_path must be a hash containing entries for section and name')
         self.__config = config_path
 
@@ -165,7 +161,12 @@ class Parameter(object):
     @property
     def has_default(self):
         """Don't use this function - see has_value instead"""
-        warnings.warn('Use has_value rather than has_default. The meaning of "default" has changed', DeprecationWarning)
+        warnings.warn(
+            'Use has_value rather than has_default. The meaning of '
+            '"default" has changed',
+            DeprecationWarning,
+            stacklevel=2
+        )
         return self.has_value
 
     @property
@@ -187,7 +188,12 @@ class Parameter(object):
 
     @property
     def default(self):
-        warnings.warn('Use value rather than default. The meaning of "default" has changed', DeprecationWarning)
+        warnings.warn(
+            'Use value rather than default. The meaning of '
+            '"default" has changed',
+            DeprecationWarning,
+            stacklevel=2
+        )
         return self.value
 
     def set_global(self, value):
@@ -206,7 +212,12 @@ class Parameter(object):
 
         :param value: the new default value.
         """
-        warnings.warn('Use set_global rather than set_default. The meaning of "default" has changed', DeprecationWarning)
+        warnings.warn(
+            'Use set_global rather than set_default. The meaning of '
+            '"default" has changed',
+            DeprecationWarning,
+            stacklevel=2
+        )
         self.__default = value
 
     def parse(self, x):
@@ -263,6 +274,32 @@ class Parameter(object):
         else:
             return self.serialize(x)
 
+    def add_to_cmdline_parser(self, parser, param_name, task_name=None, optparse=False):
+        description = []
+        if task_name:
+            description.append('%s.%s' % (task_name, param_name))
+        else:
+            description.append(param_name)
+        if self.description:
+            description.append(self.description)
+        if self.has_value:
+            description.append(" [default: %s]" % (self.value,))
+
+        if self.is_list:
+            action = "append"
+        elif self.is_boolean:
+            action = "store_true"
+        else:
+            action = "store"
+        if optparse:
+            f = parser.add_option
+        else:
+            f = parser.add_argument
+        f('--' + param_name.replace('_', '-'),
+          help=' '.join(description),
+          default=None,
+          action=action)
+
 
 class DateHourParameter(Parameter):
     """Parameter whose value is a :py:class:`~datetime.datetime` specified to the hour.
@@ -272,20 +309,34 @@ class DateHourParameter(Parameter):
     19:00.
     """
 
+    date_format = '%Y-%m-%dT%H'  # ISO 8601 is to use 'T'
+
     def parse(self, s):
         """
         Parses a string to a :py:class:`~datetime.datetime` using the format string ``%Y-%m-%dT%H``.
         """
         # TODO(erikbern): we should probably use an internal class for arbitary
         # time intervals (similar to date_interval). Or what do you think?
-        return datetime.datetime.strptime(s, "%Y-%m-%dT%H")  # ISO 8601 is to use 'T'
+        return datetime.datetime.strptime(s, self.date_format)
 
     def serialize(self, dt):
         """
         Converts the datetime to a string usnig the format string ``%Y-%m-%dT%H``.
         """
-        if dt is None: return str(dt)
-        return dt.strftime('%Y-%m-%dT%H')
+        if dt is None:
+            return str(dt)
+        return dt.strftime(self.date_format)
+
+
+class DateMinuteParameter(DateHourParameter):
+    """Parameter whose value is a :py:class:`~datetime.datetime` specified to the minute.
+
+    A DateMinuteParameter is a `ISO 8601 <http://en.wikipedia.org/wiki/ISO_8601>`_ formatted
+    date and time specified to the minute. For example, ``2013-07-10T19H07`` specifies July 10, 2013 at
+    19:07.
+    """
+
+    date_format = '%Y-%m-%dT%HH%M'  # ISO 8601 is to use 'T' and 'H'
 
 
 class DateParameter(Parameter):
