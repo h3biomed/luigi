@@ -1,27 +1,48 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright 2012-2015 Spotify AB
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
 import datetime
 import os
 import posixpath
 import time
-import luigi.hdfs
+import unittest
+
 import luigi.interface
-from luigi.hdfs import SnakebiteHdfsClient
-from snakebite.client import AutoConfigClient as SnakebiteAutoConfigClient
+from luigi import six
 from nose.plugins.attrib import attr
-from snakebite.minicluster import MiniCluster
-from minicluster import MiniClusterTestCase
+
+if six.PY3:
+    raise unittest.SkipTest("snakebite doesn't work on Python 3 yet.")
 
 try:
-    import unittest2 as unittest
+    import luigi.contrib.hdfs
+    from luigi.contrib.hdfs import SnakebiteHdfsClient
+    from minicluster import MiniClusterTestCase
+    from snakebite.client import AutoConfigClient as SnakebiteAutoConfigClient
 except ImportError:
-    import unittest
+    raise unittest.SkipTest('Snakebite not installed')
 
 
 @attr('minicluster')
 class TestSnakebiteClient(MiniClusterTestCase):
-    """This test requires a snakebite -- it finds it from your
-    client.cfg"""
-    snakebite = None
 
+    """This test requires a snakebite -- it finds it from your
+    luigi.cfg"""
+    snakebite = None
 
     def get_client(self):
         return SnakebiteHdfsClient()
@@ -67,3 +88,19 @@ class TestSnakebiteClient(MiniClusterTestCase):
         finally:
             if self.snakebite.exists(rel_test_dir):
                 self.snakebite.remove(rel_test_dir, True)
+
+    def test_rename_dont_move(self):
+        foo = posixpath.join(self.testDir, "foo")
+        bar = posixpath.join(self.testDir, "bar")
+        self.assertTrue(self.snakebite.mkdir(foo))
+        self.assertTrue(self.snakebite.mkdir(bar))
+        self.assertTrue(self.snakebite.exists(foo))  # For sanity
+        self.assertTrue(self.snakebite.exists(bar))  # For sanity
+
+        self.assertFalse(self.snakebite.rename_dont_move(foo, bar))
+        self.assertTrue(self.snakebite.exists(foo))
+        self.assertTrue(self.snakebite.exists(bar))
+
+        self.assertTrue(self.snakebite.rename_dont_move(foo, foo + '2'))
+        self.assertFalse(self.snakebite.exists(foo))
+        self.assertTrue(self.snakebite.exists(foo + '2'))

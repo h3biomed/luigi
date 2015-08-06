@@ -1,5 +1,0 @@
-mock
-moto
-nose
-boto
-sqlalchemy

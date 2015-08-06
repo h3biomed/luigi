@@ -40,17 +40,19 @@ with open('README.rst') as fobj:
     long_description = readme_note + fobj.read()
 
 install_requires = [
-    'pyparsing',
-    'tornado',
-    'snakebite>=2.4.10',
+    'cached_property<2.0',
+    'pyparsing<3.0',
+    'tornado<5.0',
+    'python-daemon<3.0',
 ]
 
-if sys.version_info[:2] < (2, 7):
-    install_requires.extend(['argparse', 'ordereddict'])
+if os.environ.get('READTHEDOCS', None) == 'True':
+    install_requires.append('sqlalchemy')
+    # So that we can build documentation for luigi.db_task_history and luigi.contrib.sqla
 
 setup(
     name='luigi',
-    version='1.0.19',
+    version='1.3.0',
     description='Workflow mgmgt + task scheduling + dependency resolution',
     long_description=long_description,
     author='Erik Bernhardsson',
@@ -60,14 +62,31 @@ setup(
     packages=[
         'luigi',
         'luigi.contrib',
+        'luigi.contrib.hdfs',
         'luigi.tools'
     ],
     package_data={
         'luigi': luigi_package_data
     },
-    scripts=[
-        'bin/luigid',
-        'bin/luigi'
-    ],
+    entry_points={
+        'console_scripts': [
+            'luigi = luigi.cmdline:luigi_run',
+            'luigid = luigi.cmdline:luigid',
+            'luigi-grep = luigi.tools.luigi_grep:main',
+            'luigi-deps = luigi.tools.deps:main',
+        ]
+    },
     install_requires=install_requires,
+    classifiers=[
+        'Development Status :: 5 - Production/Stable',
+        'Environment :: Console',
+        'Environment :: Web Environment',
+        'Intended Audience :: Developers',
+        'Intended Audience :: System Administrators',
+        'License :: OSI Approved :: Apache Software License',
+        'Programming Language :: Python :: 2.7',
+        'Programming Language :: Python :: 3.3',
+        'Programming Language :: Python :: 3.4',
+        'Topic :: System :: Monitoring',
+    ],
 )

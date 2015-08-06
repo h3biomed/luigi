@@ -1,43 +1,55 @@
-# Copyright (c) 2014 Spotify AB
+# -*- coding: utf-8 -*-
 #
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not
-# use this file except in compliance with the License. You may obtain a copy of
-# the License at
+# Copyright 2012-2015 Spotify AB
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
 # http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations under
-# the License.
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 
-import unittest
-import luigi, luigi.interface
+from helpers import unittest, LuigiTestCase
+
+import luigi
+import luigi.interface
+import tempfile
+import re
+
 
 class ExtraArgs(luigi.Task):
-    blah = luigi.Parameter(is_global=True, default=444)
+    blah = luigi.Parameter(default=444)
 
-class CmdlineTest(unittest.TestCase):
+
+class CmdlineTest(LuigiTestCase):
+
     def test_dynamic_loading(self):
-        interface = luigi.interface.ArgParseInterface()
-        self.assertRaises(Exception, interface.parse, (['FooTask', '--blah', 'xyz', '--x', '123'],)) # should raise since it's not imported
-
         interface = luigi.interface.DynamicArgParseInterface()
-        tasks = interface.parse(['--module', 'foo_module', 'FooTask', '--blah', 'xyz', '--x', '123'])
+        with tempfile.NamedTemporaryFile(dir='test/', prefix="_foo_module", suffix='.py') as temp_module_file:
+            temp_module_file.file.write(b'''
+import luigi
 
-        self.assertEqual(ExtraArgs().blah, 'xyz')
+class FooTask(luigi.Task):
+    x = luigi.IntParameter()
+''')
+            temp_module_file.file.flush()
+            temp_module_path = temp_module_file.name
+            temp_module_name = re.search(r'/(_foo_module.*).py', temp_module_path).group(1)
+            tasks = interface.parse(['--module', temp_module_name, 'FooTask', '--ExtraArgs-blah', 'xyz', '--x', '123'])
 
-        self.assertEqual(len(tasks), 1)
+            self.assertEqual(ExtraArgs().blah, 'xyz')
 
-        task, = tasks
-        self.assertEqual(task.x, 123)
+            self.assertEqual(len(tasks), 1)
 
-        import foo_module
-        self.assertEqual(task.__class__, foo_module.FooTask)
-        self.assertEqual(task, foo_module.FooTask(x=123))
+            task, = tasks
+            self.assertEqual(task.x, 123)
 
-    def test_run(self):
-        # TODO: this needs to run after the existing module, since by now foo_module is already imported
-
-        luigi.run(['--local-scheduler', '--module', 'foo_module', 'FooTask', '--x', '100'], use_dynamic_argparse=True)
+            temp_module = __import__(temp_module_name)
+            self.assertEqual(task.__class__, temp_module.FooTask)
+            self.assertEqual(task, temp_module.FooTask(x=123))
