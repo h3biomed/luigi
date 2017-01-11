@@ -118,6 +118,12 @@ class S3Client(FileSystem):
         """
         Does provided path exist on S3?
         """
+
+        print 'Checking pool size'
+        if self.s3._pool.size() > 100:
+            print 'Closing connection'
+            self.s3.close()
+
         (bucket, key) = self._path_to_bucket_and_key(path)
 
         # grab and validate the bucket
