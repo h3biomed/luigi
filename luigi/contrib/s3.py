@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright 2012-2015 Spotify AB
+# Copyright 2017 VNG Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -118,7 +118,6 @@ class S3Client(FileSystem):
         """
         Does provided path exist on S3?
         """
-
         (bucket, key) = self._path_to_bucket_and_key(path)
 
         # grab and validate the bucket
@@ -672,14 +671,7 @@ class S3Target(FileSystemTarget):
     :param kwargs: Keyword arguments are passed to the boto function `initiate_multipart_upload`
     """
 
-    @property
-    def fs(self):
-        if self._fs is not None:
-            return self._fs
-
-        # If no client was provided to constructor, create a new S3Client each time so that the connection is closed
-        # when finished
-        return S3Client()
+    fs = None
 
     def __init__(self, path, format=None, client=None, **kwargs):
         super(S3Target, self).__init__(path)
@@ -688,7 +680,7 @@ class S3Target(FileSystemTarget):
 
         self.path = path
         self.format = format
-        self._fs = client
+        self.fs = client or S3Client()
         self.s3_options = kwargs
 
     def open(self, mode='r'):
