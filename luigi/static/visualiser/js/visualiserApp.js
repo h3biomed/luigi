@@ -22,7 +22,7 @@ function visualiserApp(luigi) {
     /*
      * Updates view of the Visualization type.
      */
-    function updateVisType (newVisType) {
+    function updateVisType(newVisType) {
         $('#toggleVisButtons label').removeClass('active');
         $('#toggleVisButtons input[value="' + newVisType + '"]').parent().addClass('active');
     }
@@ -454,7 +454,7 @@ function visualiserApp(luigi) {
                     });
                 }
                 else {
-                    window.location.href = 'index.html#taskId=' + taskId;
+                    window.location.href = 'index.html#tab=graph&taskId=' + taskId;
                 }
             });
         }
@@ -504,9 +504,6 @@ function visualiserApp(luigi) {
 
         $('input[name=vis-type]').on('change', function () {
             changeState('visType', $(this).val());
-
-            initVisualisation(visType);
-            updateVisType(fragmentQuery.visType);
         });
 
         /*
